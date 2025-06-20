@@ -7,6 +7,10 @@ import os
 from datetime import datetime
 import hashlib
 from supabase import create_client, Client
+import urllib3
+
+# Suprimir warnings de SSL (basado en script verificado)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==========================
 # CONFIGURACIÓN
@@ -145,7 +149,7 @@ def verificar_conexion_supabase():
 # ==========================
 def llamar_ws(params: dict) -> dict:
     """Envía petición POST al endpoint REST de Moodle"""
-    resp = requests.post(MOODLE_BASE_URL, data=params, headers=HEADERS, verify=True)
+    resp = requests.post(MOODLE_BASE_URL, data=params, headers=HEADERS, verify=False)
     resp.raise_for_status()
     return resp.json()
 
@@ -1540,6 +1544,864 @@ def mostrar_pestana_casos_especiales():
         """)
 
 # ==========================
+# PESTAÑA 4: BÚSQUEDA EN SUPABASE
+# ==========================
+def mostrar_pestana_busqueda_supabase():
+    st.header("🔍 Búsqueda Avanzada en Base de Datos")
+    st.markdown("Realiza búsquedas específicas en la base de datos Supabase por diferentes criterios")
+    
+    # Verificar conexión a Supabase
+    if not verificar_conexion_supabase():
+        st.error("❌ **No hay conexión a Supabase**")
+        st.warning("Esta pestaña requiere conexión a la base de datos Supabase para funcionar.")
+        st.info("💡 **Solución:** Verifica tu conexión a internet y configuración de Supabase")
+        return
+    
+    # Cargar datos de referencia para los filtros
+    try:
+        df_cursos = pd.read_csv(CURSOS_CSV) if os.path.exists(CURSOS_CSV) else pd.DataFrame()
+        df_aulas_enlaces = pd.read_csv("aulas_enlaces.csv") if os.path.exists("aulas_enlaces.csv") else pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error al cargar archivos de referencia: {str(e)}")
+        df_cursos = pd.DataFrame()
+        df_aulas_enlaces = pd.DataFrame()
+    
+    # Obtener datos únicos de Supabase para los filtros
+    st.subheader("🎯 Filtros de Búsqueda")
+    
+    try:
+        # Obtener datos únicos directamente de Supabase para filtros dinámicos
+        response_all = supabase.table('calificaciones_feedback').select('course_name, docente, user_fullname').execute()
+        df_supabase_ref = pd.DataFrame(response_all.data)
+        
+        if df_supabase_ref.empty:
+            st.warning("⚠️ No hay datos en la base de datos Supabase para realizar búsquedas.")
+            st.info("💡 **Sugerencia:** Extrae algunos datos primero desde las otras pestañas.")
+            return
+            
+    except Exception as e:
+        st.error(f"Error al obtener datos de referencia de Supabase: {str(e)}")
+        return
+    
+    # Configurar filtros en columnas
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 📚 Filtros Académicos")
+        
+        # Filtro por Curso
+        cursos_disponibles = ["Todos"] + sorted(df_supabase_ref['course_name'].dropna().unique().tolist())
+        curso_busqueda = st.selectbox(
+            "🎓 Curso:",
+            cursos_disponibles,
+            key="busqueda_curso",
+            help="Filtrar por nombre del curso"
+        )
+        
+        # Filtro por NRC (si hay datos de cursos disponibles)
+        if not df_cursos.empty:
+            nrcs_disponibles = ["Todos"] + sorted(df_cursos['NRC'].dropna().astype(str).unique().tolist())
+            nrc_busqueda = st.selectbox(
+                "🔢 NRC:",
+                nrcs_disponibles,
+                key="busqueda_nrc",
+                help="Filtrar por código NRC del curso"
+            )
+        else:
+            nrc_busqueda = "Todos"
+            st.info("ℹ️ NRC no disponible (archivo cursos.csv no cargado)")
+    
+    with col2:
+        st.markdown("#### 👥 Filtros de Personas")
+        
+        # Filtro por Profesor
+        docentes_disponibles = ["Todos"] + sorted(df_supabase_ref['docente'].dropna().unique().tolist())
+        profesor_busqueda = st.selectbox(
+            "👨‍🏫 Profesor:",
+            docentes_disponibles,
+            key="busqueda_profesor",
+            help="Filtrar por nombre del docente"
+        )
+        
+        # Filtro por Estudiante
+        estudiantes_disponibles = ["Todos"] + sorted(df_supabase_ref['user_fullname'].dropna().unique().tolist())
+        estudiante_busqueda = st.selectbox(
+            "👨‍🎓 Estudiante:",
+            estudiantes_disponibles,
+            key="busqueda_estudiante",
+            help="Filtrar por nombre del estudiante"
+        )
+    
+    # Filtros adicionales
+    st.markdown("#### ⚙️ Filtros Adicionales")
+    col3, col4, col5 = st.columns(3)
+    
+    with col3:
+        filtro_feedback = st.selectbox(
+            "💬 Estado de Feedback:",
+            ["Todos", "Con feedback", "Sin feedback"],
+            key="busqueda_feedback"
+        )
+    
+    with col4:
+        filtro_calificacion = st.selectbox(
+            "📊 Tipo de Calificación:",
+            ["Todas", "Con calificación", "Sin calificar", "Rango específico"],
+            key="busqueda_calificacion"
+        )
+    
+    with col5:
+        if filtro_calificacion == "Rango específico":
+            rango_min = st.number_input("Mín:", 0, 20, 0, key="busqueda_min")
+            rango_max = st.number_input("Máx:", 0, 20, 20, key="busqueda_max")
+        else:
+            rango_min, rango_max = 0, 20
+    
+    # Botones de acción
+    col_btn1, col_btn2, col_btn3 = st.columns(3)
+    
+    with col_btn1:
+        realizar_busqueda = st.button("🔍 Realizar Búsqueda", type="primary")
+    
+    with col_btn2:
+        if st.button("🔄 Limpiar Filtros", type="secondary"):
+            # Limpiar session state de filtros
+            keys_to_clear = [
+                "busqueda_curso", "busqueda_nrc", "busqueda_profesor", 
+                "busqueda_estudiante", "busqueda_feedback", "busqueda_calificacion"
+            ]
+            for key in keys_to_clear:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
+    
+    with col_btn3:
+        contar_registros = st.button("📊 Contar Registros", help="Solo cuenta sin mostrar datos")
+    
+    # Mostrar resumen de filtros aplicados
+    filtros_aplicados = []
+    if curso_busqueda != "Todos":
+        filtros_aplicados.append(f"Curso: {curso_busqueda}")
+    if nrc_busqueda != "Todos":
+        filtros_aplicados.append(f"NRC: {nrc_busqueda}")
+    if profesor_busqueda != "Todos":
+        filtros_aplicados.append(f"Profesor: {profesor_busqueda}")
+    if estudiante_busqueda != "Todos":
+        filtros_aplicados.append(f"Estudiante: {estudiante_busqueda}")
+    if filtro_feedback != "Todos":
+        filtros_aplicados.append(f"Feedback: {filtro_feedback}")
+    if filtro_calificacion != "Todas":
+        filtros_aplicados.append(f"Calificación: {filtro_calificacion}")
+    
+    if filtros_aplicados:
+        st.info(f"📋 **Filtros activos:** {' | '.join(filtros_aplicados)}")
+    else:
+        st.info("📋 **Sin filtros aplicados** - se mostrarán todos los registros")
+    
+    # Realizar búsqueda
+    if realizar_busqueda or contar_registros:
+        with st.spinner("🔍 Realizando búsqueda en Supabase..."):
+            try:
+                # Construir query de Supabase
+                query = supabase.table('calificaciones_feedback').select('*')
+                
+                # Aplicar filtros
+                if curso_busqueda != "Todos":
+                    query = query.eq('course_name', curso_busqueda)
+                
+                if profesor_busqueda != "Todos":
+                    query = query.eq('docente', profesor_busqueda)
+                
+                if estudiante_busqueda != "Todos":
+                    query = query.eq('user_fullname', estudiante_busqueda)
+                
+                # Filtro por NRC (requiere join con datos locales)
+                response = query.execute()
+                df_resultados = pd.DataFrame(response.data)
+                
+                if not df_resultados.empty and nrc_busqueda != "Todos" and not df_cursos.empty:
+                    # Filtrar por NRC usando datos locales
+                    cursos_nrc = df_cursos[df_cursos['NRC'].astype(str) == nrc_busqueda]['id_NRC'].tolist()
+                    if cursos_nrc:
+                        df_resultados = df_resultados[df_resultados['course_id'].isin(cursos_nrc)]
+                
+                # Aplicar filtros adicionales
+                if not df_resultados.empty:
+                    if filtro_feedback == "Con feedback":
+                        df_resultados = df_resultados[df_resultados['has_feedback'] == True]
+                    elif filtro_feedback == "Sin feedback":
+                        df_resultados = df_resultados[df_resultados['has_feedback'] == False]
+                    
+                    if filtro_calificacion == "Con calificación":
+                        df_resultados = df_resultados[
+                            (df_resultados['grade'].notna()) & 
+                            (df_resultados['grade'].astype(str).str.strip() != '') &
+                            (df_resultados['grade'].astype(str).str.strip() != '0')
+                        ]
+                    elif filtro_calificacion == "Sin calificar":
+                        df_resultados = df_resultados[
+                            (df_resultados['grade'].isna()) | 
+                            (df_resultados['grade'].astype(str).str.strip() == '') |
+                            (df_resultados['grade'].astype(str).str.strip() == '0')
+                        ]
+                    elif filtro_calificacion == "Rango específico":
+                        df_resultados['grade_numeric'] = pd.to_numeric(df_resultados['grade'], errors='coerce')
+                        df_resultados = df_resultados[
+                            (df_resultados['grade_numeric'] >= rango_min) & 
+                            (df_resultados['grade_numeric'] <= rango_max)
+                        ]
+                
+                # Mostrar resultados
+                if contar_registros:
+                    st.success(f"📊 **Total de registros encontrados:** {len(df_resultados):,}")
+                    
+                    if len(df_resultados) > 0:
+                        # Estadísticas adicionales
+                        col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
+                        with col_stat1:
+                            st.metric("👥 Estudiantes Únicos", df_resultados['user_fullname'].nunique())
+                        with col_stat2:
+                            st.metric("🎓 Cursos Únicos", df_resultados['course_name'].nunique())
+                        with col_stat3:
+                            st.metric("👨‍🏫 Docentes Únicos", df_resultados['docente'].nunique())
+                        with col_stat4:
+                            st.metric("📝 Actividades Únicas", df_resultados['assignment_name'].nunique())
+                
+                else:  # realizar_busqueda
+                    if df_resultados.empty:
+                        st.warning("❌ **No se encontraron registros** con los filtros especificados")
+                        st.info("💡 **Sugerencia:** Prueba con filtros menos restrictivos o verifica que existan datos para esos criterios")
+                    else:
+                        st.success(f"✅ **Búsqueda completada:** {len(df_resultados):,} registros encontrados")
+                        
+                        # Guardar en session state
+                        st.session_state['df_busqueda_resultados'] = df_resultados
+                        
+            except Exception as e:
+                st.error(f"❌ Error durante la búsqueda: {str(e)}")
+    
+    # Mostrar resultados detallados si existen
+    if 'df_busqueda_resultados' in st.session_state and not st.session_state['df_busqueda_resultados'].empty:
+        st.markdown("---")
+        st.subheader("📊 Resultados de la Búsqueda")
+        
+        df_resultados = st.session_state['df_busqueda_resultados']
+        
+        # Pestañas para diferentes vistas
+        tab1, tab2, tab3 = st.tabs(["📋 Vista Tabla", "📈 Estadísticas", "🔗 Enlaces de Aulas"])
+        
+        with tab1:
+            st.markdown("#### 📋 Datos Detallados")
+            
+            # Seleccionar columnas a mostrar
+            columnas_disponibles = [
+                'user_fullname', 'course_name', 'docente', 'assignment_name', 
+                'grade', 'has_feedback', 'feedback'
+            ]
+            columnas_mostrar = st.multiselect(
+                "Seleccionar columnas a mostrar:",
+                columnas_disponibles,
+                default=['user_fullname', 'course_name', 'docente', 'assignment_name', 'grade', 'has_feedback'],
+                key="columnas_busqueda"
+            )
+            
+            if columnas_mostrar:
+                df_mostrar = df_resultados[columnas_mostrar].rename(columns={
+                    'user_fullname': 'Estudiante',
+                    'course_name': 'Curso',
+                    'docente': 'Docente',
+                    'assignment_name': 'Actividad',
+                    'grade': 'Calificación',
+                    'has_feedback': 'Tiene Feedback',
+                    'feedback': 'Feedback'
+                })
+                
+                st.dataframe(df_mostrar, use_container_width=True, height=400)
+                
+                # Botón de descarga
+                csv_data = df_mostrar.to_csv(index=False)
+                st.download_button(
+                    label="📥 Descargar Resultados (CSV)",
+                    data=csv_data,
+                    file_name=f"busqueda_supabase_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.warning("⚠️ Selecciona al menos una columna para mostrar")
+        
+        with tab2:
+            st.markdown("#### 📈 Análisis Estadístico")
+            
+            # Estadísticas generales
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("📊 Total Registros", len(df_resultados))
+            with col2:
+                st.metric("👥 Estudiantes", df_resultados['user_fullname'].nunique())
+            with col3:
+                st.metric("🎓 Cursos", df_resultados['course_name'].nunique())
+            with col4:
+                st.metric("👨‍🏫 Docentes", df_resultados['docente'].nunique())
+            
+            # Distribución por feedback
+            col_fb1, col_fb2 = st.columns(2)
+            with col_fb1:
+                st.markdown("**💬 Distribución de Feedback:**")
+                feedback_counts = df_resultados['has_feedback'].value_counts()
+                for tiene_feedback, count in feedback_counts.items():
+                    label = "Con feedback" if tiene_feedback else "Sin feedback"
+                    st.write(f"• {label}: {count:,} ({count/len(df_resultados)*100:.1f}%)")
+            
+            with col_fb2:
+                st.markdown("**📊 Top 5 Cursos:**")
+                top_cursos = df_resultados['course_name'].value_counts().head(5)
+                for curso, count in top_cursos.items():
+                    st.write(f"• {curso}: {count:,}")
+        
+        with tab3:
+            st.markdown("#### 🔗 Enlaces a Aulas Virtuales")
+            
+            if not df_aulas_enlaces.empty and not df_cursos.empty:
+                # Combinar con datos de NRC y enlaces
+                df_con_nrc = df_resultados.merge(
+                    df_cursos[['id_NRC', 'NRC']], 
+                    left_on='course_id', 
+                    right_on='id_NRC', 
+                    how='left'
+                )
+                
+                df_con_enlaces = df_con_nrc.merge(
+                    df_aulas_enlaces[['NRC', 'url']], 
+                    on='NRC', 
+                    how='left'
+                )
+                
+                aulas_con_enlaces = df_con_enlaces.dropna(subset=['url'])
+                
+                if not aulas_con_enlaces.empty:
+                    st.success(f"🔗 {len(aulas_con_enlaces)} registros tienen enlaces a aulas virtuales")
+                    
+                    # Mostrar enlaces únicos por NRC
+                    enlaces_unicos = aulas_con_enlaces[['course_name', 'NRC', 'url']].drop_duplicates()
+                    
+                    for _, row in enlaces_unicos.iterrows():
+                        st.markdown(f"**🏫 {row['course_name']} (NRC: {row['NRC']})**")
+                        st.markdown(f"[🔗 Ir al Aula Virtual]({row['url']})")
+                        st.markdown("---")
+                else:
+                    st.info("ℹ️ No se encontraron enlaces para las aulas de estos resultados")
+            else:
+                st.warning("⚠️ No se pueden mostrar enlaces (archivos de referencia no disponibles)")
+
+# ==========================
+# FUNCIONES PARA FECHAS DE ACTIVIDADES
+# ==========================
+def obtener_assignments_curso(course_id: int) -> list:
+    """Obtiene todas las assignments de un curso (basado en script verificado)"""
+    params = {
+        "wstoken": MOODLE_TOKEN,
+        "wsfunction": "mod_assign_get_assignments",
+        "moodlewsrestformat": "json",
+        "courseids[0]": course_id,
+        "includenotenrolledcourses": 1  # parámetro requerido para ver cursos sin enrolarse
+    }
+    
+    try:
+        resultado = llamar_ws(params)
+        assignments = []
+        
+        for course in resultado.get("courses", []):
+            # algunos WS devuelven 'courseid', otros 'id'
+            cid = course.get("courseid", course.get("id"))
+            if cid != course_id:
+                continue
+                
+            for assignment in course.get("assignments", []):
+                # Convertir timestamps a ISO format
+                assignment_data = {
+                    "assignment_id": assignment.get("id"),
+                    "assignment_name": assignment.get("name", ""),
+                    "course_id": course_id,
+                    "intro": assignment.get("intro", ""),
+                    "allowsubmissionsfromdate": assignment.get("allowsubmissionsfromdate"),
+                    "duedate": assignment.get("duedate"),
+                    "cutoffdate": assignment.get("cutoffdate"),
+                    "gradingduedate": assignment.get("gradingduedate"),
+                    "allowsubmissionsfromdate_iso": datetime.fromtimestamp(assignment.get("allowsubmissionsfromdate", 0)).isoformat() if assignment.get("allowsubmissionsfromdate") else None,
+                    "duedate_iso": datetime.fromtimestamp(assignment.get("duedate", 0)).isoformat() if assignment.get("duedate") else None,
+                    "cutoffdate_iso": datetime.fromtimestamp(assignment.get("cutoffdate", 0)).isoformat() if assignment.get("cutoffdate") else None,
+                    "gradingduedate_iso": datetime.fromtimestamp(assignment.get("gradingduedate", 0)).isoformat() if assignment.get("gradingduedate") else None,
+                }
+                assignments.append(assignment_data)
+                
+        return assignments
+        
+    except Exception as e:
+        print(f"Error obteniendo assignments del curso {course_id}: {e}")
+        return []
+
+def obtener_fechas_actividad(course_id: int, assignment_id: int) -> dict:
+    """Obtiene fechas de una actividad específica"""
+    assignments = obtener_assignments_curso(course_id)
+    
+    for assignment in assignments:
+        if assignment.get("assignment_id") == assignment_id:
+            return assignment
+    
+    return {}
+
+def obtener_estado_entrega(assign_id: int, user_id: int, group_id: int = 0) -> dict:
+    """Obtiene el estado de entrega de una tarea específica para un usuario"""
+    params = {
+        "wstoken": MOODLE_TOKEN,
+        "wsfunction": "mod_assign_get_submission_status",
+        "moodlewsrestformat": "json",
+        "assignid": assign_id,
+        "userid": user_id,
+        "groupid": group_id,
+    }
+    return llamar_ws(params)
+
+def extraer_fechas_entregas_masivo(actividades_df, progreso_callback=None):
+    """Extrae fechas de entrega y calificación para múltiples actividades"""
+    registros = []
+    total_actividades = len(actividades_df)
+    
+    for i, (_, actividad) in enumerate(actividades_df.iterrows()):
+        if progreso_callback:
+            progreso_callback((i + 1) / total_actividades)
+        
+        try:
+            assignment_id = actividad['id']
+            course_id = actividad['id_curso']
+            
+            # Obtener participantes
+            participantes = obtener_ids_participantes(assignment_id)
+            
+            for participante in participantes:
+                user_id = participante["id"]
+                user_fullname = participante["fullname"]
+                
+                try:
+                    # Obtener estado de entrega
+                    data = obtener_estado_entrega(assignment_id, user_id)
+                    
+                    # Extraer fechas de envío y calificación
+                    sub_ts = (data.get("lastattempt", {})
+                                 .get("submission", {})
+                                 .get("timemodified"))
+                    
+                    grade_ts = (data.get("lastattempt", {}).get("gradeddate")
+                               or data.get("feedback", {})
+                                      .get("grade", {})
+                                      .get("timemodified"))
+                    
+                    # Obtener información adicional
+                    submission_status = data.get("lastattempt", {}).get("submission", {}).get("status", "")
+                    submission_plugins = data.get("lastattempt", {}).get("submission", {}).get("plugins", [])
+                    
+                    registros.append({
+                        "assignment_id": assignment_id,
+                        "assignment_name": actividad.get('name', ''),
+                        "course_id": course_id,
+                        "course_name": actividad.get('NomCurso', ''),
+                        "docente": actividad.get('DOCENTE', ''),
+                        "user_id": user_id,
+                        "user_fullname": user_fullname,
+                        "submission_date_iso": datetime.fromtimestamp(sub_ts).isoformat() if sub_ts else None,
+                        "grading_date_iso": datetime.fromtimestamp(grade_ts).isoformat() if grade_ts else None,
+                        "submission_timestamp": sub_ts,
+                        "grading_timestamp": grade_ts,
+                        "submission_status": submission_status,
+                        "has_submission": bool(sub_ts),
+                        "has_grading": bool(grade_ts),
+                    })
+                    
+                except Exception as e:
+                    print(f"Error procesando usuario {user_id} en actividad {assignment_id}: {e}")
+                    continue
+                    
+        except Exception as e:
+            print(f"Error procesando actividad {assignment_id}: {e}")
+            continue
+    
+    return pd.DataFrame(registros)
+
+# ==========================
+# PESTAÑA 5: FECHAS DE ACTIVIDADES
+# ==========================
+def mostrar_pestana_fechas_actividades():
+    st.header("📅 Fechas de Actividades y Entregas")
+    st.markdown("Extrae fechas de actividades, envíos de estudiantes y calificaciones de profesores")
+    
+    # Cargar datos
+    if not os.path.exists(ASIGNACIONES_CSV) or not os.path.exists(CURSOS_CSV):
+        st.error("❌ No se encontraron los archivos CSV necesarios")
+        return
+    
+    try:
+        df_asignaciones = pd.read_csv(ASIGNACIONES_CSV)
+        df_cursos = pd.read_csv(CURSOS_CSV)
+    except Exception as e:
+        st.error(f"Error al cargar los archivos CSV: {str(e)}")
+        return
+    
+    # Combinar datos
+    df_combinado = df_asignaciones.merge(
+        df_cursos[['id_NRC', 'NomCurso', 'DOCENTE', 'Modalidad', 'NRC']], 
+        left_on='id_curso', 
+        right_on='id_NRC', 
+        how='left'
+    )
+    
+    # Crear pestañas para diferentes tipos de extracción
+    tab1, tab2 = st.tabs(["📅 Fechas de Actividades", "📤 Fechas de Entregas y Calificaciones"])
+    
+    with tab1:
+        st.subheader("📅 Extraer Fechas de Actividades")
+        st.markdown("Obtiene fechas límite, de apertura y cierre de las actividades")
+        
+        # Filtros similares a otras pestañas
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            modalidades_disponibles = ["Todos"] + sorted(df_combinado['Modalidad'].dropna().unique().tolist())
+            modalidad_fechas = st.selectbox(
+                "Modalidad:",
+                modalidades_disponibles,
+                key="fechas_modalidad"
+            )
+        
+        with col2:
+            # Filtrar por modalidad
+            if modalidad_fechas == "Todos":
+                df_filtrado_modal = df_combinado.copy()
+            else:
+                df_filtrado_modal = df_combinado[df_combinado['Modalidad'] == modalidad_fechas]
+            
+            cursos_disponibles = ["Todos"] + sorted(df_filtrado_modal['NomCurso'].dropna().unique().tolist())
+            curso_fechas = st.selectbox(
+                "Curso:",
+                cursos_disponibles,
+                key="fechas_curso"
+            )
+        
+        # Filtrar actividades
+        if curso_fechas == "Todos":
+            df_actividades_fechas = df_filtrado_modal.copy()
+        else:
+            df_actividades_fechas = df_filtrado_modal[df_filtrado_modal['NomCurso'] == curso_fechas]
+        
+        st.info(f"📋 {len(df_actividades_fechas)} actividades disponibles")
+        
+        if st.button("📅 Extraer Fechas de Actividades", type="primary", key="extraer_fechas_act"):
+            with st.spinner("Extrayendo fechas de actividades..."):
+                fechas_actividades = []
+                progress_bar = st.progress(0)
+                
+                # Obtener cursos únicos para evitar repeticiones
+                cursos_unicos = df_actividades_fechas[['id_curso', 'NomCurso', 'Modalidad']].drop_duplicates()
+                
+                total_cursos = len(cursos_unicos)
+                curso_procesado = 0
+                
+                for _, curso_row in cursos_unicos.iterrows():
+                    try:
+                        course_id = int(curso_row['id_curso'])
+                        curso_nombre = curso_row['NomCurso']
+                        modalidad_curso = curso_row['Modalidad']
+                        
+                        # Usar la función verificada para obtener todas las assignments del curso
+                        assignments = obtener_assignments_curso(course_id)
+                        
+                        # Obtener información adicional de las actividades del curso en df_actividades_fechas
+                        actividades_curso = df_actividades_fechas[df_actividades_fechas['id_curso'] == course_id]
+                        
+                        for assignment in assignments:
+                            # Buscar información adicional en las actividades si existe
+                            actividad_info = actividades_curso[actividades_curso['id'] == assignment.get('assignment_id')]
+                            
+                            if not actividad_info.empty:
+                                actividad_row = actividad_info.iloc[0]
+                                docente = actividad_row.get('DOCENTE', '')
+                                nrc = actividad_row.get('NRC', '')
+                            else:
+                                docente = ''
+                                nrc = ''
+                            
+                            fecha_info = {
+                                'assignment_id': assignment.get('assignment_id'),
+                                'assignment_name': assignment.get('assignment_name', ''),
+                                'course_id': course_id,
+                                'course_name': curso_nombre,
+                                'docente': docente,
+                                'modalidad': modalidad_curso,
+                                'nrc': nrc,
+                                'intro': assignment.get('intro', ''),
+                                'allowsubmissionsfromdate': assignment.get('allowsubmissionsfromdate'),
+                                'duedate': assignment.get('duedate'),
+                                'cutoffdate': assignment.get('cutoffdate'),
+                                'gradingduedate': assignment.get('gradingduedate'),
+                                'allowsubmissionsfromdate_iso': assignment.get('allowsubmissionsfromdate_iso'),
+                                'duedate_iso': assignment.get('duedate_iso'),
+                                'cutoffdate_iso': assignment.get('cutoffdate_iso'),
+                                'gradingduedate_iso': assignment.get('gradingduedate_iso'),
+                            }
+                            fechas_actividades.append(fecha_info)
+                        
+                        curso_procesado += 1
+                        progress_bar.progress(curso_procesado / total_cursos)
+                        
+                    except Exception as e:
+                        st.warning(f"Error extrayendo fechas del curso {curso_row['NomCurso']}: {e}")
+                        curso_procesado += 1
+                        progress_bar.progress(curso_procesado / total_cursos)
+                
+                if fechas_actividades:
+                    df_fechas_act = pd.DataFrame(fechas_actividades)
+                    st.session_state['df_fechas_actividades'] = df_fechas_act
+                    st.success(f"✅ Fechas extraídas para {len(fechas_actividades)} actividades de {total_cursos} cursos")
+                else:
+                    st.warning("❌ No se pudieron extraer fechas de actividades")
+        
+        # Mostrar resultados de fechas de actividades
+        if 'df_fechas_actividades' in st.session_state:
+            st.markdown("---")
+            st.subheader("📊 Fechas de Actividades")
+            
+            df_fechas = st.session_state['df_fechas_actividades']
+            
+            # Seleccionar columnas a mostrar
+            columnas_fechas = [
+                'assignment_name', 'course_name', 'docente', 'modalidad', 'nrc',
+                'allowsubmissionsfromdate_iso', 'duedate_iso', 'cutoffdate_iso', 'gradingduedate_iso'
+            ]
+            
+            df_mostrar_fechas = df_fechas[columnas_fechas].rename(columns={
+                'assignment_name': 'Actividad',
+                'course_name': 'Curso',
+                'docente': 'Docente',
+                'modalidad': 'Modalidad',
+                'nrc': 'NRC',
+                'allowsubmissionsfromdate_iso': 'Fecha Apertura',
+                'duedate_iso': 'Fecha Límite',
+                'cutoffdate_iso': 'Fecha Corte',
+                'gradingduedate_iso': 'Fecha Límite Calificación'
+            })
+            
+            st.dataframe(df_mostrar_fechas, use_container_width=True, height=400)
+            
+            # Descarga
+            csv_fechas = df_mostrar_fechas.to_csv(index=False)
+            st.download_button(
+                label="📥 Descargar Fechas de Actividades (CSV)",
+                data=csv_fechas,
+                file_name=f"fechas_actividades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+    
+    with tab2:
+        st.subheader("📤 Extraer Fechas de Entregas y Calificaciones")
+        st.markdown("Obtiene fechas de envío de estudiantes y calificación de profesores")
+        
+        # Selector de tipo de extracción
+        tipo_extraccion_fechas = st.selectbox(
+            "Tipo de extracción:",
+            [
+                "Actividad específica",
+                "Todas las actividades de un curso",
+                "Todas las actividades de un profesor"
+            ],
+            key="tipo_extraccion_fechas"
+        )
+        
+        actividades_seleccionadas_fechas = pd.DataFrame()
+        
+        if tipo_extraccion_fechas == "Actividad específica":
+            # Filtros para actividad específica
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                modalidad_sel = st.selectbox(
+                    "Modalidad:",
+                    ["Todos"] + sorted(df_combinado['Modalidad'].dropna().unique().tolist()),
+                    key="fechas_ent_modalidad"
+                )
+            
+            with col2:
+                if modalidad_sel == "Todos":
+                    df_filt_mod = df_combinado.copy()
+                else:
+                    df_filt_mod = df_combinado[df_combinado['Modalidad'] == modalidad_sel]
+                
+                curso_sel = st.selectbox(
+                    "Curso:",
+                    ["Todos"] + sorted(df_filt_mod['NomCurso'].dropna().unique().tolist()),
+                    key="fechas_ent_curso"
+                )
+            
+            with col3:
+                if curso_sel == "Todos":
+                    df_filt_curso = df_filt_mod.copy()
+                else:
+                    df_filt_curso = df_filt_mod[df_filt_mod['NomCurso'] == curso_sel]
+                
+                docente_sel = st.selectbox(
+                    "Docente:",
+                    ["Todos"] + sorted(df_filt_curso['DOCENTE'].dropna().unique().tolist()),
+                    key="fechas_ent_docente"
+                )
+            
+            # Filtrar actividades
+            if docente_sel == "Todos":
+                df_final = df_filt_curso.copy()
+            else:
+                df_final = df_filt_curso[df_filt_curso['DOCENTE'] == docente_sel]
+            
+            if not df_final.empty:
+                actividades_info = []
+                for _, row in df_final.iterrows():
+                    info = f"{row['NomCurso']} - {row['name']} (Docente: {row['DOCENTE']})"
+                    actividades_info.append((info, row))
+                
+                if actividades_info:
+                    actividad_sel_idx = st.selectbox(
+                        "Seleccionar Actividad:",
+                        range(len(actividades_info)),
+                        format_func=lambda x: actividades_info[x][0],
+                        key="actividad_fechas_especifica"
+                    )
+                    
+                    if actividad_sel_idx is not None:
+                        row_seleccionada = actividades_info[actividad_sel_idx][1]
+                        actividades_seleccionadas_fechas = pd.DataFrame([row_seleccionada])
+        
+        elif tipo_extraccion_fechas == "Todas las actividades de un curso":
+            curso_sel_masivo = st.selectbox(
+                "Seleccionar Curso:",
+                sorted(df_combinado['NomCurso'].dropna().unique()),
+                key="curso_fechas_masivo"
+            )
+            actividades_seleccionadas_fechas = df_combinado[df_combinado['NomCurso'] == curso_sel_masivo]
+        
+        elif tipo_extraccion_fechas == "Todas las actividades de un profesor":
+            docente_sel_masivo = st.selectbox(
+                "Seleccionar Profesor:",
+                sorted(df_combinado['DOCENTE'].dropna().unique()),
+                key="docente_fechas_masivo"
+            )
+            actividades_seleccionadas_fechas = df_combinado[df_combinado['DOCENTE'] == docente_sel_masivo]
+        
+        if not actividades_seleccionadas_fechas.empty:
+            st.info(f"📋 Se procesarán {len(actividades_seleccionadas_fechas)} actividades")
+            
+            if st.button("📤 Extraer Fechas de Entregas", type="primary", key="extraer_fechas_ent"):
+                with st.spinner("Extrayendo fechas de entregas y calificaciones... Esto puede tomar varios minutos."):
+                    progress_bar = st.progress(0)
+                    
+                    def actualizar_progreso(progreso):
+                        progress_bar.progress(progreso)
+                    
+                    df_entregas = extraer_fechas_entregas_masivo(
+                        actividades_seleccionadas_fechas, 
+                        progreso_callback=actualizar_progreso
+                    )
+                    
+                    if not df_entregas.empty:
+                        st.session_state['df_fechas_entregas'] = df_entregas
+                        st.success(f"✅ Fechas de entregas extraídas: {len(df_entregas)} registros")
+                    else:
+                        st.warning("❌ No se pudieron extraer fechas de entregas")
+        
+        # Mostrar resultados de fechas de entregas
+        if 'df_fechas_entregas' in st.session_state:
+            st.markdown("---")
+            st.subheader("📊 Fechas de Entregas y Calificaciones")
+            
+            df_entregas = st.session_state['df_fechas_entregas']
+            
+            # Estadísticas
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("📊 Total Registros", len(df_entregas))
+            with col2:
+                st.metric("📤 Con Entrega", len(df_entregas[df_entregas['has_submission']]))
+            with col3:
+                st.metric("📝 Calificados", len(df_entregas[df_entregas['has_grading']]))
+            with col4:
+                st.metric("👥 Estudiantes", df_entregas['user_fullname'].nunique())
+            
+            # Filtros para mostrar resultados
+            st.subheader("🔧 Filtros de Resultados")
+            col_filt1, col_filt2 = st.columns(2)
+            
+            with col_filt1:
+                filtro_entrega = st.selectbox(
+                    "Estado de Entrega:",
+                    ["Todos", "Con entrega", "Sin entrega"],
+                    key="filtro_entrega_fechas"
+                )
+            
+            with col_filt2:
+                filtro_calificacion = st.selectbox(
+                    "Estado de Calificación:",
+                    ["Todos", "Calificados", "Sin calificar"],
+                    key="filtro_calificacion_fechas"
+                )
+            
+            # Aplicar filtros
+            df_mostrar_entregas = df_entregas.copy()
+            
+            if filtro_entrega == "Con entrega":
+                df_mostrar_entregas = df_mostrar_entregas[df_mostrar_entregas['has_submission']]
+            elif filtro_entrega == "Sin entrega":
+                df_mostrar_entregas = df_mostrar_entregas[~df_mostrar_entregas['has_submission']]
+            
+            if filtro_calificacion == "Calificados":
+                df_mostrar_entregas = df_mostrar_entregas[df_mostrar_entregas['has_grading']]
+            elif filtro_calificacion == "Sin calificar":
+                df_mostrar_entregas = df_mostrar_entregas[~df_mostrar_entregas['has_grading']]
+            
+            # Tabla de resultados
+            columnas_entregas = [
+                'user_fullname', 'assignment_name', 'course_name', 'docente',
+                'submission_date_iso', 'grading_date_iso', 'submission_status'
+            ]
+            
+            df_tabla_entregas = df_mostrar_entregas[columnas_entregas].rename(columns={
+                'user_fullname': 'Estudiante',
+                'assignment_name': 'Actividad',
+                'course_name': 'Curso',
+                'docente': 'Docente',
+                'submission_date_iso': 'Fecha Entrega',
+                'grading_date_iso': 'Fecha Calificación',
+                'submission_status': 'Estado Entrega'
+            })
+            
+            st.dataframe(df_tabla_entregas, use_container_width=True, height=400)
+            
+            # Descargas
+            col_desc1, col_desc2 = st.columns(2)
+            
+            with col_desc1:
+                csv_entregas = df_tabla_entregas.to_csv(index=False)
+                st.download_button(
+                    label="📥 Descargar Entregas (CSV)",
+                    data=csv_entregas,
+                    file_name=f"fechas_entregas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+            
+            with col_desc2:
+                json_entregas = df_mostrar_entregas.to_json(orient='records', date_format='iso', indent=2)
+                st.download_button(
+                    label="📥 Descargar Entregas (JSON)",
+                    data=json_entregas,
+                    file_name=f"fechas_entregas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json"
+                )
+
+# ==========================
 # INTERFAZ PRINCIPAL CON PESTAÑAS
 # ==========================
 def main():
@@ -1561,7 +2423,7 @@ def main():
     st.markdown("---")
     
     # Crear pestañas
-    tab1, tab2, tab3 = st.tabs(["📋 Extracción Individual", "📊 Extracción Masiva", "🔍 Análisis de Casos"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 Extracción Individual", "📊 Extracción Masiva", "🔍 Análisis de Casos", "🔍 Búsqueda en Supabase", "📅 Fechas de Actividades"])
     
     with tab1:
         mostrar_pestana_individual()
@@ -1571,6 +2433,12 @@ def main():
     
     with tab3:
         mostrar_pestana_casos_especiales()
+    
+    with tab4:
+        mostrar_pestana_busqueda_supabase()
+    
+    with tab5:
+        mostrar_pestana_fechas_actividades()
     
     # Gestión de cache en la sidebar
     st.sidebar.markdown("---")
