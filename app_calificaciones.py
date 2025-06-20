@@ -1458,12 +1458,12 @@ def mostrar_pestana_casos_especiales():
 # ==========================
 def main():
     st.set_page_config(
-        page_title="📊 Extractor de Calificaciones Moodle",
+        page_title="Extractor de Calificaciones Moodle",
         page_icon="📊",
         layout="wide"
     )
     
-    st.title("📊 Extractor de Calificaciones y Feedback - ISIL+")
+    st.title("Extractor de Calificaciones y Feedback - ISIL+")
     
     # Verificar conexión a Supabase
     if verificar_conexion_supabase():
