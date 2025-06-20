@@ -11,16 +11,36 @@ from supabase import create_client, Client
 # ==========================
 # CONFIGURACIÓN
 # ==========================
-MOODLE_BASE_URL = "https://platform.ecala.net/webservice/rest/server.php"
-MOODLE_TOKEN = "7a5d0b50bfca46455a93ef404a608f81"
+import os
+from dotenv import load_dotenv
+
+# Cargar variables de entorno
+load_dotenv('.env.local')
+
+# Configuración con prioridad: Streamlit secrets > .env.local > variables de entorno
+try:
+    # Intentar usar Streamlit secrets primero
+    MOODLE_BASE_URL = st.secrets.get('MOODLE_URL', os.getenv('MOODLE_URL', 'https://platform.ecala.net/webservice/rest/server.php'))
+    MOODLE_TOKEN = st.secrets.get('MOODLE_TOKEN', os.getenv('MOODLE_TOKEN'))
+    SUPABASE_URL = st.secrets.get('SUPABASE_URL', os.getenv('SUPABASE_URL'))
+    SUPABASE_KEY = st.secrets.get('SUPABASE_KEY', os.getenv('SUPABASE_KEY'))
+except:
+    # Fallback a variables de entorno si Streamlit secrets no está disponible
+    MOODLE_BASE_URL = os.getenv('MOODLE_URL', 'https://platform.ecala.net/webservice/rest/server.php')
+    MOODLE_TOKEN = os.getenv('MOODLE_TOKEN')
+    SUPABASE_URL = os.getenv('SUPABASE_URL')
+    SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+
 HEADERS = {"Content-Type": "application/x-www-form-urlencoded"}
 
-# Configuración Supabase
-SUPABASE_URL = "https://nuetgujngotlopsjqqrr.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im51ZXRndWpuZ290bG9wc2pxcXJyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTAzOTE0NDEsImV4cCI6MjA2NTk2NzQ0MX0.bU8bqT0GIBYb_kfwpihz-4XYceZDAHpYbC1nByCNBEs"
-
-# Inicializar cliente Supabase
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Inicializar cliente Supabase solo si las credenciales están disponibles
+supabase: Client = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as e:
+        print(f"Error al conectar con Supabase: {e}")
+        supabase = None
 
 # Archivos de datos
 ASIGNACIONES_CSV = "asignaciones_evaluaciones.csv"
@@ -33,6 +53,8 @@ CACHE_MASIVO_CSV = "cache_masivo.csv"
 # ==========================
 def verificar_datos_en_supabase(course_id, assignment_id):
     """Verifica si ya existen datos en Supabase para un curso y actividad específicos"""
+    if not supabase:
+        return False, []
     try:
         response = supabase.table('calificaciones_feedback').select('*').eq('course_id', course_id).eq('assignment_id', assignment_id).execute()
         return len(response.data) > 0, response.data
@@ -42,6 +64,8 @@ def verificar_datos_en_supabase(course_id, assignment_id):
 
 def guardar_datos_en_supabase(datos_lista):
     """Guarda una lista de datos en Supabase"""
+    if not supabase:
+        return False, 0
     try:
         # Preparar datos para inserción
         datos_para_insertar = []
@@ -73,6 +97,8 @@ def guardar_datos_en_supabase(datos_lista):
 
 def obtener_datos_de_supabase(course_id, assignment_id):
     """Obtiene datos específicos de Supabase"""
+    if not supabase:
+        return pd.DataFrame()
     try:
         response = supabase.table('calificaciones_feedback').select('*').eq('course_id', course_id).eq('assignment_id', assignment_id).execute()
         return pd.DataFrame(response.data)
@@ -82,6 +108,8 @@ def obtener_datos_de_supabase(course_id, assignment_id):
 
 def obtener_datos_masivos_supabase(filtros):
     """Obtiene datos masivos de Supabase con filtros"""
+    if not supabase:
+        return pd.DataFrame()
     try:
         query = supabase.table('calificaciones_feedback').select('*')
         
@@ -103,6 +131,8 @@ def obtener_datos_masivos_supabase(filtros):
 
 def verificar_conexion_supabase():
     """Verifica si la conexión a Supabase funciona"""
+    if not supabase:
+        return False
     try:
         response = supabase.table('calificaciones_feedback').select('id').limit(1).execute()
         return True

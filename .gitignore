@@ -152,7 +152,8 @@ cython_debug/
 .vscode/
 
 # Streamlit
-.streamlit/
+.streamlit/secrets.toml
+.streamlit/config.toml
 
 # Archivos del sistema
 .DS_Store
