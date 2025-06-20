@@ -1463,7 +1463,7 @@ def main():
         layout="wide"
     )
     
-    st.title("📊 Extractor de Calificaciones y Feedback - Moodle")
+    st.title("📊 Extractor de Calificaciones y Feedback - ISIL+")
     
     # Verificar conexión a Supabase
     if verificar_conexion_supabase():
