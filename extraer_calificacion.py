@@ -11,8 +11,8 @@ import time
 # ==========================
 # CONFIGURACIÓN INICIAL
 # ==========================
-MOODLE_BASE_URL = "https://platform.ecala.net/webservice/rest/server.php"
-MOODLE_TOKEN    = "7a5d0b50bfca46455a93ef404a608f81"
+MOODLE_BASE_URL = ""
+MOODLE_TOKEN    = ""
 HEADERS = {
     "Content-Type": "application/x-www-form-urlencoded"
 }
